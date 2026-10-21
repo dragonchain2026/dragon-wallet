@@ -1,0 +1,93 @@
+name: Android Release
+
+on:
+  push:
+    tags: ['v*.*.*']
+  workflow_dispatch:
+    inputs:
+      validate_only:
+        description: Run checks and a debug build without signing credentials or publishing
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          flutter-version: '3.47.7'
+          channel: stable
+      - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
+        with:
+          cmdline-tools-version: '12266719'
+          packages: platform-tools
+          log-accepted-android-sdk-licenses: false
+      - name: Install Android native tools
+        run: sdkmanager 'ndk;28.2.13676358' 'cmake;3.22.1' 'build-tools;36.0.0' 'platforms;android-36'
+      - name: Check version
+        run: python3 -c 'import sys; sys.path.insert(0, "scripts"); import release; print(release.version())'
+      - name: Release guard tests
+        run: python3 -m unittest discover -s scripts -p 'test_*.py'
+      - name: Flutter checks
+        run: |
+          flutter pub get
+          flutter analyze
+          flutter test
+      - name: Native key compatibility tests
+        run: |
+          cmake -S native/dragon_wallet_core -B build/native-tests -DDRAGON_BUILD_KEY_TESTS=ON -DCMAKE_BUILD_TYPE=Release
+          cmake --build build/native-tests --parallel 2
+          ctest --test-dir build/native-tests --output-on-failure
+      - name: Validate Android build without private configuration
+        if: inputs.validate_only
+        run: flutter build apk --debug
+      - name: Restore release configuration
+        if: github.event_name != 'workflow_dispatch' || !inputs.validate_only
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_STORE_TYPE: ${{ secrets.ANDROID_STORE_TYPE }}
+          WALLET_API_TOKEN: ${{ secrets.WALLET_API_TOKEN }}
+          WALLET_API_URL: ${{ vars.WALLET_API_URL }}
+          WALLET_API_LEGACY_URLS: ${{ vars.WALLET_API_LEGACY_URLS }}
+          CEX_URL: ${{ vars.CEX_URL }}
+        run: python3 scripts/release.py prepare
+      - name: Build and verify signed APK
+        if: github.event_name != 'workflow_dispatch' || !inputs.validate_only
+        run: make apk update
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: github.event_name != 'workflow_dispatch' || !inputs.validate_only
+        with:
+          name: android-release
+          path: build/targets/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Create draft Release
+        if: github.event_name != 'workflow_dispatch' || !inputs.validate_only
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/release.py publish
+      - name: Clean private configuration
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/dragon-release-signing" "$RUNNER_TEMP/dragon-release-profile.json"

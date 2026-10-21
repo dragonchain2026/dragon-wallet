@@ -1,0 +1,28 @@
+name: dragon_wallet
+publish_to: none
+description: Dragonchain mainnet wallet with Android local key management
+# Next APK version; advanced only after a successful build and verification.
+version: 1.0.0+1
+environment:
+  sdk: '>=3.3.0 <4.0.0'
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_localizations:
+    sdk: flutter
+  crypto: ^3.0.6
+  cupertino_icons: ^1.0.8
+  http: ^1.3.0
+  qr_flutter: ^4.1.0
+  shared_preferences: ^2.5.3
+  webview_flutter: ^4.14.1
+  mobile_scanner: ^7.4.2
+dev_dependencies:
+  webview_flutter_platform_interface: ^2.15.1
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/dragon.png

@@ -1,0 +1,23 @@
+{
+  "repository": "https://github.com/Shawfer/dragonchain",
+  "commit": "e94c7595a532e3ddb6d9c187926f17e484962191",
+  "files": {
+    "api.h": "36968da819d77717c09719394da6d1d42b999f4496c88457df9ae9fd2ce57fe5",
+    "inner.h": "ce95d2efeb8cf171252867dbab40f396ec297ca352f4d4ed1aa4c504d111d5e4",
+    "fpr.h": "0561e4297d47d8ffd3d25613803808bed1b8782e3738cd773732ea6420a27e2e",
+    "fips202.h": "b9ceb35bafa24d06f7754d6f4323d43f71217518a9c7b5ad0e9a07cb75a76a8e",
+    "randombytes.h": "1c972ffce00d59e14d30ff368a283eca47265824a54163d44953585d6415df81",
+    "codec.cpp": "b64d09bf739f8c41d32fcf1ec2f22dad2c9bdee0059df510fb27dbadc0f9e410",
+    "common.cpp": "d190a259f0e657df514225a059b61816c22db16c44f0fdfac1573008124bf953",
+    "fft.cpp": "2c0746b25b4ed0bc9bdb8309ea905f9a3c2e78b15f74c88b9e0f49af9472c9e2",
+    "fpr.cpp": "febcf516f485b367624102c98ac665470cf204d424a35c7a75647e03e78f727d",
+    "keygen.cpp": "afe31c04bd65342fa513b913017f953bff641c9c22b3512c320b348f748f44ba",
+    "rng.cpp": "13d38fef838d5b588d4fbac29b2b429f99ab59946bc7223d4adcaf51f8c2944d",
+    "sign.cpp": "3e6868b4e4a2aa3f4c196d488ee69cf40e2ae6ca08f3036ef221643e4bfd1aa4",
+    "vrfy.cpp": "ce1591679a211227e5710eeccb7c7559522252884a8abb7bd19534de19b612a2",
+    "fips202.cpp": "7c7c4791b18b9d96fc14fa8422a4448aca00375f2923f74fa08717e7ef315b7e",
+    "pqclean.cpp": "da807c76541cd7146bbd2fe36fe32fec68310c34c5819310e2869c30e5dbb95a",
+    "crypto/ripemd160.cpp": "b2a1c1a7dd45696d4cc87b55aa1f5e273a6a112ffbab6ea15aaf9ed85cada477",
+    "crypto/ripemd160.h": "31452b299e56478674faa93d739051fca2ce031ca3c77b5983f62b5bb5180fc5"
+  }
+}

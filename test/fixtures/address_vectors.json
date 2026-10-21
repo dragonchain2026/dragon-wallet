@@ -1,0 +1,41 @@
+{
+  "provenance": "Synthetic payloads, mainnet prefixes from pinned source; not live-node interoperability evidence.",
+  "valid": [
+    {
+      "address": "SNrExv4meNtf7QKvwj5EWudgZUrE14xFqc",
+      "normalized": "SNrExv4meNtf7QKvwj5EWudgZUrE14xFqc",
+      "script": "76a914111111111111111111111111111111111111111188ac"
+    },
+    {
+      "address": "sKoe1eYdfZcypGyJTjizagWTakpi5fScmU",
+      "normalized": "sKoe1eYdfZcypGyJTjizagWTakpi5fScmU",
+      "script": "a914111111111111111111111111111111111111111187"
+    },
+    {
+      "address": "dragon1qzyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3h3066r",
+      "normalized": "dragon1qzyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3h3066r",
+      "script": "00141111111111111111111111111111111111111111"
+    },
+    {
+      "address": "dragon1qyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3qt2lhh9",
+      "normalized": "dragon1qyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3qt2lhh9",
+      "script": "00202222222222222222222222222222222222222222222222222222222222222222"
+    },
+    {
+      "address": "DRAGON1QZYG3ZYG3ZYG3ZYG3ZYG3ZYG3ZYG3ZYG3H3066R",
+      "normalized": "dragon1qzyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3h3066r",
+      "script": "00141111111111111111111111111111111111111111"
+    }
+  ],
+  "invalid": [
+    "Tas3vExdmvHHZhkC1z5ByHT3Szd491AdKz",
+    "RaB2zhUCE1xuUY3kttQbYf67JULLanbMNZ",
+    "tXpSxySVo71cGaPZXzix34KpUGbYC3hChc",
+    "tugar1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqxy8u",
+    "rugar1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq7a28t5",
+    "dragon1pqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqw30vz6",
+    "dragon1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq2g7agr",
+    "dragon1qzyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3h3066x",
+    "Dragon1qzyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3h3066r"
+  ]
+}
