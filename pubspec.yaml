@@ -2,7 +2,7 @@ name: dragon_wallet
 publish_to: none
 description: Dragonchain mainnet wallet with Android local key management
 # Next APK version; advanced only after a successful build and verification.
-version: 1.0.17+19
+version: 1.0.1+19
 environment:
   sdk: '>=3.3.0 <4.0.0'
 dependencies:
