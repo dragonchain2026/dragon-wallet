@@ -8,6 +8,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'address.dart';
 import 'key_vault.dart';
 import 'wallet_api.dart';
+import 'wallet_panels.dart';
 
 abstract interface class WalletStore {
   Future<String?> read();
@@ -110,40 +111,95 @@ class WalletController extends ChangeNotifier {
   // Deployment token is supplied at build time, never saved to preferences.
   static const bundledToken = String.fromEnvironment('WALLET_API_TOKEN');
   String token = bundledToken;
+  late final WalletPanels panels = WalletPanels(api)
+    ..addListener(_panelsChanged);
+  Map<String, dynamic>? _lastBalance, _lastOutputs, _lastHistory;
+  void _panelsChanged() {
+    busy = panels.loading;
+    final balance = panels.states['balance']!;
+    error = balance.error;
+    updatedAt = balance.updatedAt;
+    final data = balance.data;
+    final outputData = panels.states['utxo']!.data;
+    final historyData = panels.states[_historyType]!.data;
+    if (data != null &&
+        address != null &&
+        (data != _lastBalance ||
+            outputData != _lastOutputs ||
+            historyData != _lastHistory)) {
+      _lastBalance = data;
+      _lastOutputs = outputData;
+      _lastHistory = historyData;
+      // Compatibility view for native consumers; requests and native panels keep
+      // independent page states and never wait for this aggregate.
+      final outputs = panels.states['utxo']!.data?['items'] as List? ?? [];
+      final history =
+          panels.states[_historyType]!.data?['items'] as List? ?? [];
+      snapshot = WalletSnapshot({
+        ...data,
+        'tip': data['index'],
+        'utxos': outputs,
+        'transactions': history,
+        'utxos_truncated': data['utxo_count'] > outputs.length,
+        'next_offset': null
+      }, address!);
+    }
+    _notify();
+  }
+
   WalletSnapshot? snapshot;
   String? error;
   DateTime? updatedAt;
   bool initializing = true;
   bool busy = false;
   bool _disposed = false;
-  int _request = 0;
-  StreamSubscription<void>? _changes;
-  String? _streamKey;
+  static const refreshOptions = [10, 30, 60, 1800, 0];
+  int _refreshSeconds = 60;
+  int get refreshSeconds => _refreshSeconds;
+
+  Future<void> setRefreshSeconds(int seconds) async {
+    if (!refreshOptions.contains(seconds)) {
+      throw ArgumentError('Invalid refresh interval');
+    }
+    await store.write(jsonEncode({
+      'address': address,
+      'endpoint': endpoint,
+      'watch_addresses': _savedAddresses,
+      'refresh_seconds': seconds,
+    }));
+    if (_disposed) return;
+    _refreshSeconds = seconds;
+    _notify();
+  }
+
+  Timer? _refreshTimer;
+  String? _timerKey;
   bool _active = true;
   bool _refreshPending = false;
 
   void setActive(bool active) {
+    final resumed = active && !_active;
     _active = active;
-    _syncStream();
+    if (!active) _refreshPending = false;
+    _syncRefreshTimer();
+    if (resumed) unawaited(refresh());
   }
 
-  void _syncStream() {
-    final key = !_disposed && _active && connected && address != null
-        ? '$endpoint|$token|$address'
+  void _syncRefreshTimer() {
+    final key = !_disposed &&
+            _active &&
+            connected &&
+            address != null &&
+            _refreshSeconds > 0
+        ? '$endpoint|$token|$address|$_refreshSeconds'
         : null;
-    if (key == _streamKey) return;
-    _changes?.cancel();
-    _changes = null;
-    _streamKey = key;
+    if (key == _timerKey) return;
+    _refreshTimer?.cancel();
+    _timerKey = key;
     if (key != null) {
-      _changes = api.changes(endpoint, token, address!).listen((_) {
-        if (_disposed || _streamKey != key) return;
-        if (busy) {
-          _refreshPending = true;
-        } else {
-          unawaited(refresh());
-        }
-      }, onError: (Object _) {});
+      _refreshTimer = Timer.periodic(Duration(seconds: _refreshSeconds), (_) {
+        unawaited(refresh());
+      });
     }
   }
 
@@ -187,6 +243,10 @@ class WalletController extends ChangeNotifier {
       }
       if (saved != null) {
         final config = jsonDecode(saved) as Map<String, dynamic>;
+        final interval = config['refresh_seconds'];
+        _refreshSeconds = interval is int && refreshOptions.contains(interval)
+            ? interval
+            : 60;
         _savedAddresses = ((config['watch_addresses'] as List?) ?? [])
             .map((value) => normalizeAddress(value as String))
             .toSet()
@@ -211,7 +271,8 @@ class WalletController extends ChangeNotifier {
           await store.write(jsonEncode({
             'address': address,
             'endpoint': endpoint,
-            'watch_addresses': _savedAddresses
+            'watch_addresses': _savedAddresses,
+            'refresh_seconds': _refreshSeconds,
           }));
         }
         if (endpoint.isNotEmpty) {
@@ -253,17 +314,19 @@ class WalletController extends ChangeNotifier {
     await store.write(jsonEncode({
       'address': normalized,
       'endpoint': server,
-      'watch_addresses': savedAddresses
+      'watch_addresses': savedAddresses,
+      'refresh_seconds': _refreshSeconds,
     }));
     if (_disposed) {
       return;
     }
-    _request++;
+    _refreshPending = false;
     address = normalized;
     _savedAddresses = savedAddresses;
     endpoint = server;
     token = accessToken;
     snapshot = null;
+    panels.configure(endpoint, token, address);
     updatedAt = null;
     error = null;
     busy = false;
@@ -271,122 +334,26 @@ class WalletController extends ChangeNotifier {
     if (refreshOnSwitch && switchingAddress && connected) await refresh();
   }
 
-  Set<String> _historyTypes = {'normal'};
-  Set<String> get historyTypes => Set.unmodifiable(_historyTypes);
-  Future<void> setHistoryTypes(Set<String> types) async {
-    if (types.any((type) => type != 'normal' && type != 'mining')) {
+  String _historyType = 'normal';
+  String get historyType => _historyType;
+  Future<void> setHistoryType(String type) async {
+    if (type != 'normal' && type != 'mining') {
       throw ArgumentError('Invalid transaction type');
     }
-    if (setEquals(types, _historyTypes)) return;
-    _historyTypes = Set.of(types);
-    _request++;
-    busy = false;
-    if (snapshot != null) {
-      snapshot = WalletSnapshot({
-        ...snapshot!.data,
-        'transactions': <Map<String, dynamic>>[],
-        'next_offset': null,
-        'transaction_count': 0
-      }, address!);
-    }
+    if (type == _historyType) return;
+    _historyType = type;
+    // Both history types already refresh independently; switching only changes
+    // the visible list and preserves cached data and in-flight requests.
     _notify();
-  }
-
-  Future<void> loadMoreUtxos() async {
-    final previous = snapshot;
-    if (_disposed ||
-        busy ||
-        previous == null ||
-        previous.data['utxos_truncated'] != true ||
-        !connected) {
-      return;
-    }
-    final request = ++_request;
-    final requestedAddress = address!;
-    busy = true;
-    error = null;
-    _notify();
-    try {
-      final page = await api.snapshot(endpoint, token, requestedAddress,
-          utxoOffset: previous.utxos.length,
-          tip: previous.tipHash,
-          types: _historyTypes);
-      if (_disposed || request != _request) return;
-      if (page.tipHash != previous.tipHash || page.utxos.isEmpty) {
-        throw WalletApiException(tr('区块链已更新，请刷新后再加载历史'));
-      }
-      snapshot = WalletSnapshot({
-        ...previous.data,
-        'utxos': [...previous.utxos, ...page.utxos],
-        'utxos_truncated': page.data['utxos_truncated'],
-      }, requestedAddress);
-    } catch (e) {
-      if (!_disposed && request == _request) {
-        error = e is WalletApiException ? e.message : tr('读取失败，请稍后重试');
-      }
-    } finally {
-      if (!_disposed && request == _request) {
-        busy = false;
-        _notify();
-      }
-    }
   }
 
   Future<void> refresh({bool more = false}) async {
-    if (_disposed || busy || address == null || !connected) {
-      return;
-    }
-    final previous = snapshot;
-    if (more && previous?.nextOffset == null) {
-      return;
-    }
-    final request = ++_request;
-    busy = true;
-    error = null;
-    _notify();
-    try {
-      final result = await api.snapshot(
-        endpoint,
-        token,
-        address!,
-        offset: more ? previous!.nextOffset! : 0,
-        tip: more ? previous!.tipHash : null,
-        types: _historyTypes,
-      );
-      if (_disposed || request != _request) {
-        return;
-      }
-      snapshot = more
-          ? WalletSnapshot({
-              ...result.data,
-              'transactions': [
-                ...previous!.transactions,
-                ...result.transactions,
-              ],
-            }, address!)
-          : result;
-      if (previous != null &&
-          previous.tipHash == result.tipHash &&
-          previous.utxos.length > result.utxos.length) {
-        snapshot = WalletSnapshot({
-          ...snapshot!.data,
-          'utxos': previous.utxos,
-          'utxos_truncated': previous.data['utxos_truncated']
-        }, address!);
-      }
-      updatedAt = DateTime.now();
-    } catch (exception) {
-      if (_disposed || request != _request) {
-        return;
-      }
-      error = exception is WalletApiException
-          ? exception.message
-          : tr("读取失败，请稍后重试");
-    } finally {
-      if (!_disposed && request == _request) {
-        busy = false;
-        _notify();
-      }
+    if (_disposed || !_active || address == null || !connected) return;
+    panels.configure(endpoint, token, address);
+    if (more) {
+      await panels.load('normal', more: true);
+    } else {
+      await panels.refresh();
     }
   }
 
@@ -400,15 +367,12 @@ class WalletController extends ChangeNotifier {
   Future<void> removeWatchAddress(String value) async {
     final remaining = _savedAddresses.where((item) => item != value).toList();
     final removingCurrent = address == value;
-    if (remaining.isEmpty && removingCurrent) {
-      await store.clear();
-    } else {
-      await store.write(jsonEncode({
-        'address': removingCurrent ? null : address,
-        'endpoint': endpoint,
-        'watch_addresses': remaining,
-      }));
-    }
+    await store.write(jsonEncode({
+      'address': removingCurrent ? null : address,
+      'endpoint': endpoint,
+      'watch_addresses': remaining,
+      'refresh_seconds': _refreshSeconds,
+    }));
     if (_disposed) {
       return;
     }
@@ -417,10 +381,10 @@ class WalletController extends ChangeNotifier {
       _notify();
       return;
     }
-    _request++;
     address = null;
     token = bundledToken;
     snapshot = null;
+    panels.configure(endpoint, token, address);
     updatedAt = null;
     busy = false;
     error = null;
@@ -429,7 +393,7 @@ class WalletController extends ChangeNotifier {
 
   void _notify() {
     if (!_disposed) {
-      _syncStream();
+      _syncRefreshTimer();
       notifyListeners();
       if (!busy && _refreshPending) {
         _refreshPending = false;
@@ -441,8 +405,8 @@ class WalletController extends ChangeNotifier {
   @override
   void dispose() {
     _disposed = true;
-    _request++;
-    _changes?.cancel();
+    panels.dispose();
+    _refreshTimer?.cancel();
     api.close();
     super.dispose();
   }

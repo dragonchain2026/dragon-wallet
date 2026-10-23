@@ -22,8 +22,7 @@ void main() {
             builder: (context) => TextButton(
                   onPressed: () => Navigator.of(context).push(
                       MaterialPageRoute<void>(
-                          builder: (_) => WatchAddressesPage(
-                              wallet: wallet, onAdd: () async {}))),
+                          builder: (_) => WatchAddressesPage(wallet: wallet))),
                   child: const Text('open'),
                 ))));
     await tester.tap(find.text('open'));
@@ -38,6 +37,30 @@ void main() {
     await tester.pumpWidget(const SizedBox());
     wallet.dispose();
   });
+  testWidgets('add validates and saves directly in the list dialog',
+      (tester) async {
+    final wallet = WalletController(
+        api: WalletApi(), store: MemoryStore(), namesStore: MemoryStore());
+    await tester
+        .pumpWidget(MaterialApp(home: WatchAddressesPage(wallet: wallet)));
+    await tester.tap(find.text('添加观察钱包'));
+    await tester.pumpAndSettle();
+    expect(find.byType(AlertDialog), findsOneWidget);
+    await tester.tap(find.text('保存'));
+    await tester.pumpAndSettle();
+    expect(wallet.watchAddresses, isEmpty);
+    await tester.enterText(find.byType(TextFormField).first, 'My watch wallet');
+    await tester.enterText(find.byType(TextFormField).last, address);
+    await tester.tap(find.text('保存'));
+    await tester.pumpAndSettle();
+    expect(find.byType(AlertDialog), findsNothing);
+    expect(find.byType(WatchAddressesPage), findsOneWidget);
+    expect(wallet.watchAddresses, [address]);
+    expect(wallet.nameFor(address), 'My watch wallet');
+    await tester.pumpWidget(const SizedBox());
+    wallet.dispose();
+  });
+
   test('legacy watch address migrates; list survives switching and removal',
       () async {
     final store = MemoryStore()

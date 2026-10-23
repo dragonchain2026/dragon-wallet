@@ -75,7 +75,7 @@ jobs:
         run: python3 scripts/release.py prepare
       - name: Build and verify signed APK
         if: github.event_name != 'workflow_dispatch' || !inputs.validate_only
-        run: make apk update
+        run: python3 scripts/release.py build
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: github.event_name != 'workflow_dispatch' || !inputs.validate_only
         with:

@@ -105,18 +105,18 @@ void main() {
     Navigator.of(context).push(MaterialPageRoute<void>(
         builder: (_) => ImportPage(controller: wallet)));
     await tester.pumpAndSettle();
-    expect(find.text('Wallet name and connection'), findsOneWidget);
+    expect(find.text('Settings'), findsOneWidget);
     await tester.tap(find.byType(DropdownButtonFormField<String>));
     await tester.pumpAndSettle();
     await tester.tap(find.text('中文').last);
     await tester.pumpAndSettle();
-    expect(find.text('钱包名称与连接'), findsOneWidget);
+    expect(find.text('设置'), findsOneWidget);
     expect(saved, 'zh');
     await tester.tap(find.byType(DropdownButtonFormField<String>));
     await tester.pumpAndSettle();
     await tester.tap(find.text('English').last);
     await tester.pumpAndSettle();
-    expect(find.text('Wallet name and connection'), findsOneWidget);
+    expect(find.text('Settings'), findsOneWidget);
     await tester.pumpWidget(const SizedBox());
     wallet.dispose();
   });

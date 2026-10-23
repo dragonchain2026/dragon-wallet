@@ -63,24 +63,29 @@ def prepare():
 def verify(apk):
     name, code = version()
     sdk = Path(os.environ.get('ANDROID_HOME') or os.environ['ANDROID_SDK_ROOT'])
-    tools = sorted((sdk / 'build-tools').iterdir(),
-                   key=lambda p: tuple(int(n) for n in re.findall(r'\d+', p.name)))
+    tools = [sdk / 'build-tools/36.0.0']
     signer = next((p / 'apksigner' for p in reversed(tools) if (p / 'apksigner').is_file()), None)
-    aapt = next((p / 'aapt' for p in reversed(tools) if (p / 'aapt').is_file()), None)
+    aapt = next((p / tool for p in reversed(tools) for tool in ['aapt2', 'aapt'] if (p / tool).is_file()), None)
     if not signer or not aapt:
         raise RuntimeError('Android signature/version verification tools are missing.')
     result = subprocess.run([str(signer), 'verify', '--verbose', '--print-certs', str(apk)],
                             capture_output=True, text=True)
     expected = (ROOT / 'scripts/release-certificate.sha256').read_text().strip().lower()
     certificates = re.findall(r'Signer #\d+ certificate SHA-256 digest: ([a-fA-F0-9]+)', result.stdout)
+    print('APK signature check:', result.returncode, certificates, 'expected:', expected)
     if result.returncode or [c.lower() for c in certificates] != [expected]:
         raise RuntimeError('APK does not have the existing release signing certificate.')
-    badging = subprocess.run([str(aapt), 'dump', 'badging', str(apk)], capture_output=True, text=True, check=True).stdout
+    metadata = subprocess.run([str(aapt), 'dump', 'badging', str(apk)], capture_output=True, text=True)
+    if metadata.returncode:
+        raise RuntimeError('Android package metadata tool failed: ' + metadata.stderr[:2000])
+    badging = metadata.stdout
     package = re.search(r"package: name='([^']+)' versionCode='(\d+)' versionName='([^']+)'", badging)
+    print('APK package/version:', package.groups() if package else 'unrecognized package metadata')
     if not package or package.groups() != ('org.dragonwallet.dragon_wallet', str(code), name):
         raise RuntimeError('APK application ID or version differs from the release configuration.')
     with zipfile.ZipFile(apk) as archive:
         abis = sorted({n.split('/')[1] for n in archive.namelist() if re.fullmatch(r'lib/[^/]+/libapp\.so', n)})
+        print('APK native ABIs:', abis)
         if abis != ['arm64-v8a', 'armeabi-v7a', 'x86_64']:
             raise RuntimeError('APK does not contain all supported ABIs.')
         for abi in abis:
@@ -114,6 +119,8 @@ def build():
                    env=env, cwd=ROOT, check=True)
     source = ROOT / 'build/app/outputs/flutter-apk/app-release.apk'
     report = verify(source)
+    out.mkdir(parents=True, exist_ok=True)
+    print('APK verification passed; exporting release files.')
     with source.open('rb') as origin, artifact.open('xb') as target:
         shutil.copyfileobj(origin, target)
     (out / 'SHA256SUMS').write_text(report['sha256'] + '  ' + artifact.name + '\n')
@@ -160,6 +167,9 @@ def main():
 if __name__ == '__main__':
     try:
         main()
-    except (Exception, KeyboardInterrupt):
-        print('Release step failed; check the preceding tool output. Private configuration is withheld.', file=sys.stderr)
+    except RuntimeError as error:
+        print(str(error), file=sys.stderr)
+        sys.exit(1)
+    except (Exception, KeyboardInterrupt) as error:
+        print('Release step failed (' + type(error).__name__ + '); private configuration is withheld.', file=sys.stderr)
         sys.exit(1)

@@ -2,13 +2,12 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'core/app_language.dart';
 import 'core/wallet_controller.dart';
+import 'core/address.dart';
 import 'address_name_dialog.dart';
 
 class WatchAddressesPage extends StatefulWidget {
-  const WatchAddressesPage(
-      {super.key, required this.wallet, required this.onAdd});
+  const WatchAddressesPage({super.key, required this.wallet});
   final WalletController wallet;
-  final Future<void> Function() onAdd;
 
   @override
   State<WatchAddressesPage> createState() => _WatchAddressesPageState();
@@ -30,6 +29,14 @@ class _WatchAddressesPageState extends State<WatchAddressesPage> {
     } finally {
       if (mounted) setState(() => busy = false);
     }
+  }
+
+  Future<void> add() async {
+    final added = await showDialog<bool>(
+      context: context,
+      builder: (_) => _AddWatchDialog(wallet: widget.wallet),
+    );
+    if (added == true) unawaited(widget.wallet.refresh());
   }
 
   Future<void> remove(String address) async {
@@ -59,7 +66,7 @@ class _WatchAddressesPageState extends State<WatchAddressesPage> {
             Text(tr('观察钱包仅支持查看余额、交易记录和收款，不能转账')),
             const SizedBox(height: 16),
             FilledButton.icon(
-                onPressed: busy ? null : () => run(widget.onAdd),
+                onPressed: busy ? null : () => add(),
                 icon: const Icon(Icons.add),
                 label: Text(tr('添加观察钱包'))),
             if (busy) const LinearProgressIndicator(),
@@ -118,6 +125,100 @@ class _WatchAddressesPageState extends State<WatchAddressesPage> {
                         ],
                       ))),
           ]),
+        ),
+      );
+}
+
+class _AddWatchDialog extends StatefulWidget {
+  const _AddWatchDialog({required this.wallet});
+  final WalletController wallet;
+  @override
+  State<_AddWatchDialog> createState() => _AddWatchDialogState();
+}
+
+class _AddWatchDialogState extends State<_AddWatchDialog> {
+  final form = GlobalKey<FormState>();
+  final address = TextEditingController();
+  late final name = TextEditingController(text: widget.wallet.suggestedName);
+  bool saving = false;
+  String? error;
+
+  @override
+  void dispose() {
+    address.dispose();
+    name.dispose();
+    super.dispose();
+  }
+
+  Future<void> save() async {
+    if (!form.currentState!.validate()) return;
+    setState(() {
+      saving = true;
+      error = null;
+    });
+    try {
+      await widget.wallet.configure(
+          address.text, widget.wallet.endpoint, widget.wallet.token,
+          name: name.text, refreshOnSwitch: false);
+      if (mounted) Navigator.pop(context, true);
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          saving = false;
+          error = e is FormatException ? e.message : tr('保存失败，请重试');
+        });
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => PopScope(
+        canPop: !saving,
+        child: AlertDialog(
+          title: Text(tr('添加观察钱包')),
+          content: SingleChildScrollView(
+              child: Form(
+                  key: form,
+                  child: Column(mainAxisSize: MainAxisSize.min, children: [
+                    TextFormField(
+                        controller: name,
+                        maxLength: 32,
+                        decoration: InputDecoration(labelText: tr('钱包名称')),
+                        validator: (value) {
+                          try {
+                            WalletController.validateName(value ?? '');
+                            return null;
+                          } on FormatException catch (e) {
+                            return e.message;
+                          }
+                        }),
+                    TextFormField(
+                        controller: address,
+                        minLines: 1,
+                        maxLines: 3,
+                        autocorrect: false,
+                        enableSuggestions: false,
+                        decoration: InputDecoration(labelText: tr('钱包地址')),
+                        validator: (value) {
+                          try {
+                            normalizeAddress(value ?? '');
+                            return null;
+                          } on FormatException catch (e) {
+                            return e.message;
+                          }
+                        }),
+                    if (error != null)
+                      Text(error!,
+                          style: TextStyle(
+                              color: Theme.of(context).colorScheme.error)),
+                  ]))),
+          actions: [
+            TextButton(
+                onPressed: saving ? null : () => Navigator.pop(context),
+                child: Text(tr('取消'))),
+            FilledButton(
+                onPressed: saving ? null : save, child: Text(tr('保存'))),
+          ],
         ),
       );
 }

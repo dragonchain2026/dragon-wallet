@@ -14,6 +14,7 @@ import 'key_page.dart';
 import 'transfer_page.dart';
 import 'trading_page.dart';
 import 'watch_addresses_page.dart';
+import 'wallet_panel_view.dart';
 import 'address_name_dialog.dart';
 
 Future<void> main() async {
@@ -78,8 +79,7 @@ class WalletHome extends StatefulWidget {
 
 class _WalletHomeState extends State<WalletHome> with WidgetsBindingObserver {
   int tab = 0;
-  int _utxoLimit = 10;
-  String? _utxoAddress;
+  bool _trading = false;
   WalletController get wallet => widget.controller;
   @override
   void initState() {
@@ -90,7 +90,7 @@ class _WalletHomeState extends State<WalletHome> with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    wallet.setActive(state == AppLifecycleState.resumed);
+    wallet.setActive(state == AppLifecycleState.resumed && !_trading);
     if (state == AppLifecycleState.resumed) {
       unawaited(wallet.refreshKeys());
     }
@@ -114,23 +114,21 @@ class _WalletHomeState extends State<WalletHome> with WidgetsBindingObserver {
 
   Future<void> manageWatchAddresses() async {
     await Navigator.of(context).push(MaterialPageRoute<void>(
-      builder: (listContext) => WatchAddressesPage(
-        wallet: wallet,
-        onAdd: () async {
-          await Navigator.of(listContext).push(MaterialPageRoute<void>(
-            builder: (_) => ImportPage(controller: wallet, newWatch: true),
-          ));
-        },
-      ),
+      builder: (_) => WatchAddressesPage(wallet: wallet),
     ));
     if (mounted) setState(() => tab = 0);
   }
 
   Future<void> openTrading() async {
+    _trading = true;
+    wallet.setActive(false);
     await Navigator.of(context).push(
       MaterialPageRoute<void>(builder: (_) => const TradingPage()),
     );
+    _trading = false;
     if (!mounted) return;
+    wallet.setActive(
+        WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed);
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
       ..showSnackBar(SnackBar(content: Text(tr('已切换回钱包'))));
@@ -215,7 +213,6 @@ class _WalletHomeState extends State<WalletHome> with WidgetsBindingObserver {
               ),
               IconButton(
                 onPressed: wallet.initializing ||
-                        wallet.busy ||
                         !wallet.connected ||
                         wallet.address == null
                     ? null
@@ -252,8 +249,6 @@ class _WalletHomeState extends State<WalletHome> with WidgetsBindingObserver {
                           physics: const AlwaysScrollableScrollPhysics(),
                           padding: const EdgeInsets.all(20),
                           children: [
-                            if (wallet.busy) const LinearProgressIndicator(),
-                            if (wallet.error != null) notice(wallet.error!),
                             if (!wallet.connected)
                               notice(
                                 tr("收款钱包已保存在本机。连接服务后可查询余额与历史。"),
@@ -261,16 +256,6 @@ class _WalletHomeState extends State<WalletHome> with WidgetsBindingObserver {
                                   onPressed: configure,
                                   child: Text(tr("连接服务")),
                                 ),
-                              ),
-                            if (wallet.snapshot != null &&
-                                !wallet.snapshot!.synced)
-                              notice(
-                                tr(
-                                    "索引正在同步或节点暂不可用。下方为部分数据，不能代表完整余额。\n已索引 {0} / {1} 个区块",
-                                    [
-                                      wallet.snapshot!.height,
-                                      wallet.snapshot!.nodeHeight ?? tr("未知")
-                                    ]),
                               ),
                             if (tab == 0) ...overview(),
                             if (tab == 1) ...receive(),
@@ -322,7 +307,7 @@ class _WalletHomeState extends State<WalletHome> with WidgetsBindingObserver {
                 if (wallet.error != null) notice(wallet.error!),
                 const SizedBox(height: 28),
                 FilledButton.icon(
-                  onPressed: configure,
+                  onPressed: manageWatchAddresses,
                   icon: const Icon(Icons.add),
                   label: Text(tr("导入观察钱包")),
                 ),
@@ -356,7 +341,6 @@ class _WalletHomeState extends State<WalletHome> with WidgetsBindingObserver {
       );
 
   List<Widget> overview() {
-    final state = wallet.snapshot;
     return [
       const SizedBox(height: 12),
       Card(
@@ -365,28 +349,10 @@ class _WalletHomeState extends State<WalletHome> with WidgetsBindingObserver {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(state != null && !state.synced
-                  ? tr("已索引余额（同步中）")
-                  : tr("已确认余额")),
-              const SizedBox(height: 12),
-              SelectableText(
-                state == null ? '—' : formatAmount(state.balance),
-                style: Theme.of(context).textTheme.headlineLarge,
-              ),
-              const Text('Dragonchain'),
-              const SizedBox(height: 16),
-              Text(
-                tr("不含待确认交易；含尚未成熟的挖矿奖励。此数值不是可发送余额。"),
-                style: TextStyle(fontSize: 12),
-              ),
-              if (wallet.updatedAt != null)
-                Text(
-                  tr("更新于 {0}{1}", [
-                    _time(wallet.updatedAt!),
-                    wallet.error == null ? '' : tr(" · 数据可能已过期")
-                  ]),
-                  style: const TextStyle(fontSize: 12),
-                ),
+              WalletPanelView(
+                  key: const ValueKey('balance'),
+                  panels: wallet.panels,
+                  kind: 'balance'),
               const SizedBox(height: 12),
               Wrap(
                 spacing: 12,
@@ -451,67 +417,8 @@ class _WalletHomeState extends State<WalletHome> with WidgetsBindingObserver {
         ],
       ),
       const Divider(height: 32),
-      Text(
-        tr("未花费输出（UTXO） · {0}", [state?.data['utxo_count'] ?? '—']),
-        style: Theme.of(context).textTheme.titleMedium,
-      ),
-      if (state == null)
-        Padding(
-          padding: EdgeInsets.symmetric(vertical: 20),
-          child: Text(tr("连接服务后显示链上数据")),
-        ),
-      if (state != null && state.utxos.isEmpty)
-        Padding(
-          padding: EdgeInsets.symmetric(vertical: 20),
-          child: Text(tr("当前索引中没有未花费输出")),
-        ),
-      if (state != null)
-        for (final output in state.utxos
-            .take(_utxoAddress == wallet.address ? _utxoLimit : 10))
-          Card(
-            child: ListTile(
-              title: Text(
-                formatAmount(BigInt.parse(output['value_atomic'] as String)),
-              ),
-              subtitle: Text(
-                tr("{0} : {1}\n{2} 次确认{3}", [
-                  _short(output['txid'] as String),
-                  output['vout'],
-                  output['confirmations'],
-                  output['coinbase'] == 1 ? tr(" · 挖矿奖励") : ''
-                ]),
-              ),
-              trailing: const Icon(Icons.chevron_right),
-              onTap: () => details(tr("未花费输出"), output),
-            ),
-          ),
-      if (state != null &&
-          (state.utxos.length >
-                  (_utxoAddress == wallet.address ? _utxoLimit : 10) ||
-              state.data['utxos_truncated'] == true))
-        TextButton(
-            onPressed: wallet.busy
-                ? null
-                : () async {
-                    final currentAddress = wallet.address;
-                    final limit =
-                        _utxoAddress == currentAddress ? _utxoLimit : 10;
-                    if (state.utxos.length <= limit) {
-                      await wallet.loadMoreUtxos();
-                    }
-                    if (!mounted ||
-                        currentAddress != wallet.address ||
-                        wallet.error != null) {
-                      return;
-                    }
-                    setState(() {
-                      _utxoLimit =
-                          (_utxoAddress == wallet.address ? _utxoLimit : 10) +
-                              10;
-                      _utxoAddress = wallet.address;
-                    });
-                  },
-            child: Text(tr("再显示 10 个 UTXO"))),
+      WalletPanelView(
+          key: const ValueKey('utxo'), panels: wallet.panels, kind: 'utxo'),
     ];
   }
 
@@ -546,77 +453,27 @@ class _WalletHomeState extends State<WalletHome> with WidgetsBindingObserver {
             : tr("本机保存了对应私钥，请妥善备份。")),
       ];
 
-  List<Widget> history() {
-    final state = wallet.snapshot;
-    final transactions = state?.transactions
-            .where((tx) => wallet.historyTypes
-                .contains(tx['coinbase'] == 1 ? 'mining' : 'normal'))
-            .toList() ??
-        [];
-    return [
-      Text(tr("交易记录"), style: Theme.of(context).textTheme.headlineMedium),
-      const SizedBox(height: 8),
-      Text(tr("仅显示已确认交易，金额为此钱包的净变化。")),
-      Wrap(spacing: 8, children: [
-        for (final type in {'normal': tr("普通交易"), 'mining': tr("挖矿奖励")}.entries)
-          FilterChip(
-              label: Text(type.value),
-              selected: wallet.historyTypes.contains(type.key),
-              onSelected: (selected) {
-                final types = wallet.historyTypes.toSet();
-                if (selected) {
-                  types.add(type.key);
-                } else {
-                  types.remove(type.key);
-                }
-                unawaited(wallet.setHistoryTypes(types));
-              }),
-      ]),
-      Text(tr("时间按设备本地时区显示")),
-      const SizedBox(height: 16),
-      if (state == null) Text(tr("连接服务后查看交易记录")),
-      if (wallet.historyTypes.isEmpty) Text(tr("请勾选要显示的交易类型")),
-      if (state != null &&
-          transactions.isEmpty &&
-          wallet.historyTypes.isNotEmpty &&
-          !wallet.busy)
-        Text(tr("当前筛选下暂无交易记录")),
-      if (state != null)
-        for (final tx in transactions)
-          Card(
-            child: ListTile(
-              leading: Icon(
-                BigInt.parse(tx['delta_atomic'] as String).isNegative
-                    ? Icons.north_east
-                    : Icons.south_west,
-              ),
-              title: Text(
-                formatAmount(
-                  BigInt.parse(tx['delta_atomic'] as String),
-                  signed: true,
-                ),
-              ),
-              subtitle: Text(
-                tr("{0} · {1}\n{2} 次确认 · {3}", [
-                  tx['coinbase'] == 1 ? tr("挖矿奖励") : tr("普通交易"),
-                  _short(tx['txid'] as String),
-                  tx['confirmations'],
-                  _time(DateTime.fromMillisecondsSinceEpoch(
-                      (tx['time'] as int) * 1000,
-                      isUtc: true))
-                ]),
-              ),
-              isThreeLine: true,
-              onTap: () => details(tr("交易详情"), tx),
-            ),
-          ),
-      if (state?.nextOffset != null)
-        OutlinedButton(
-          onPressed: wallet.busy ? null : () => wallet.refresh(more: true),
-          child: Text(tr("加载更多")),
+  List<Widget> history() => [
+        Text(tr('交易记录'), style: Theme.of(context).textTheme.headlineMedium),
+        const SizedBox(height: 8),
+        Text(tr('仅显示已确认交易，金额为此钱包的净变化。')),
+        DropdownButton<String>(
+          value: wallet.historyType,
+          isExpanded: true,
+          items: [
+            DropdownMenuItem(value: 'normal', child: Text(tr('普通交易'))),
+            DropdownMenuItem(value: 'mining', child: Text(tr('挖矿奖励'))),
+          ],
+          onChanged: (value) {
+            if (value != null) unawaited(wallet.setHistoryType(value));
+          },
         ),
-    ];
-  }
+        const SizedBox(height: 16),
+        WalletPanelView(
+            key: ValueKey(wallet.historyType),
+            panels: wallet.panels,
+            kind: wallet.historyType),
+      ];
 
   Future<void> details(
     String title,
@@ -641,8 +498,7 @@ class _WalletHomeState extends State<WalletHome> with WidgetsBindingObserver {
                   onPressed: () => copy(data['txid'] as String, tr("交易 ID")),
                   child: Text(tr("复制交易 ID")),
                 ),
-                Text(tr("区块高度：{0}", [data['height']])),
-                Text(tr("确认数：{0}", [data['confirmations']])),
+                Text(tr("确认数：{0}", [wallet.panels.confirmations(data)])),
                 if (data['time'] is int)
                   Text(tr("时间：{0}", [
                     _time(DateTime.fromMillisecondsSinceEpoch(
@@ -668,9 +524,6 @@ class _WalletHomeState extends State<WalletHome> with WidgetsBindingObserver {
       );
 }
 
-String _short(String value) => value.length <= 20
-    ? value
-    : '${value.substring(0, 10)}…${value.substring(value.length - 8)}';
 String _time(DateTime date) {
   final local = date.toLocal();
   String pad(int value) => value.toString().padLeft(2, '0');
@@ -679,9 +532,7 @@ String _time(DateTime date) {
 }
 
 class ImportPage extends StatefulWidget {
-  const ImportPage(
-      {super.key, required this.controller, this.newWatch = false});
-  final bool newWatch;
+  const ImportPage({super.key, required this.controller});
   final WalletController controller;
   @override
   State<ImportPage> createState() => _ImportPageState();
@@ -689,26 +540,18 @@ class ImportPage extends StatefulWidget {
 
 class _ImportPageState extends State<ImportPage> {
   final _form = GlobalKey<FormState>();
-  late final TextEditingController _address, _endpoint, _name;
+  late final TextEditingController _endpoint;
   bool _saving = false;
   String? _error;
   @override
   void initState() {
     super.initState();
-    _address = TextEditingController(
-        text: widget.newWatch ? '' : widget.controller.address);
     _endpoint = TextEditingController(text: widget.controller.endpoint);
-    _name = TextEditingController(
-        text: widget.newWatch || widget.controller.address == null
-            ? widget.controller.suggestedName
-            : widget.controller.nameFor(widget.controller.address!));
   }
 
   @override
   void dispose() {
-    _address.dispose();
     _endpoint.dispose();
-    _name.dispose();
     super.dispose();
   }
 
@@ -722,10 +565,9 @@ class _ImportPageState extends State<ImportPage> {
     });
     try {
       await widget.controller.configure(
-        _address.text,
+        widget.controller.address ?? '',
         _endpoint.text,
         WalletController.bundledToken,
-        name: _name.text,
         refreshOnSwitch: false,
       );
       if (mounted) {
@@ -742,42 +584,9 @@ class _ImportPageState extends State<ImportPage> {
     }
   }
 
-  Future<void> forget() async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text(tr("移除观察钱包？")),
-        content: Text(tr("仅删除本机观察记录，不影响链上资产。")),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: Text(tr("取消")),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: Text(tr("移除")),
-          ),
-        ],
-      ),
-    );
-    if (confirmed != true || !mounted) {
-      return;
-    }
-    try {
-      await widget.controller.forget();
-      if (mounted) {
-        Navigator.pop(context);
-      }
-    } catch (_) {
-      if (mounted) {
-        setState(() => _error = tr("移除失败，请重试"));
-      }
-    }
-  }
-
   @override
   Widget build(BuildContext context) => Scaffold(
-        appBar: AppBar(title: Text(tr("钱包名称与连接"))),
+        appBar: AppBar(title: Text(tr("设置"))),
         body: Align(
           alignment: Alignment.topCenter,
           child: ConstrainedBox(
@@ -789,9 +598,7 @@ class _ImportPageState extends State<ImportPage> {
                 children: [
                   DropdownButtonFormField<String>(
                     initialValue: AppLanguage.instance.code,
-                    decoration: InputDecoration(
-                        labelText: tr('语言'),
-                        helperText: tr('语言切换后自动保存，无需填写观察钱包。')),
+                    decoration: InputDecoration(labelText: tr('语言')),
                     items: const [
                       DropdownMenuItem(value: 'en', child: Text('English')),
                       DropdownMenuItem(value: 'zh', child: Text('中文'))
@@ -807,55 +614,32 @@ class _ImportPageState extends State<ImportPage> {
                     },
                   ),
                   const SizedBox(height: 24),
-                  Text(tr("导入主网公开钱包。这里不接收私钥或助记词。")),
-                  const SizedBox(height: 8),
-                  Text(tr('观察钱包仅支持查看余额、交易记录和收款，不能转账')),
-                  const SizedBox(height: 20),
-                  TextFormField(
-                    controller: _address,
-                    decoration: InputDecoration(labelText: tr("当前钱包")),
-                    maxLines: 3,
-                    minLines: 1,
-                    autocorrect: false,
-                    enableSuggestions: false,
-                    validator: (value) {
-                      if (!widget.newWatch &&
-                          (value ?? '').trim().isEmpty &&
-                          widget.controller.address == null) {
-                        return null;
-                      }
+                  DropdownButtonFormField<int>(
+                    initialValue: widget.controller.refreshSeconds,
+                    decoration: InputDecoration(labelText: tr('刷新频率')),
+                    items: [
+                      for (final seconds in WalletController.refreshOptions)
+                        DropdownMenuItem(
+                            value: seconds,
+                            child: Text(tr(switch (seconds) {
+                              10 => '10 秒',
+                              30 => '30 秒',
+                              60 => '1 分钟',
+                              1800 => '30 分钟',
+                              _ => '仅手动',
+                            }))),
+                    ],
+                    onChanged: (seconds) async {
+                      if (seconds == null) return;
                       try {
-                        normalizeAddress(value ?? '');
-                        return null;
-                      } on FormatException catch (error) {
-                        return error.message;
+                        await widget.controller.setRefreshSeconds(seconds);
+                        if (mounted) setState(() => _error = null);
+                      } catch (_) {
+                        if (mounted) setState(() => _error = tr('保存失败，请重试'));
                       }
                     },
                   ),
                   const SizedBox(height: 24),
-                  TextFormField(
-                    controller: _name,
-                    maxLength: 32,
-                    decoration: InputDecoration(labelText: tr("钱包名称")),
-                    validator: (value) {
-                      if (_address.text.trim().isEmpty &&
-                          widget.controller.address == null) {
-                        return null;
-                      }
-                      try {
-                        WalletController.validateName(value ?? '');
-                        return null;
-                      } on FormatException catch (e) {
-                        return e.message;
-                      }
-                    },
-                  ),
-                  const SizedBox(height: 16),
-                  Text(
-                    tr("余额查询服务（可稍后设置）"),
-                    style: Theme.of(context).textTheme.titleMedium,
-                  ),
-                  const SizedBox(height: 8),
                   TextFormField(
                     controller: _endpoint,
                     decoration: InputDecoration(
@@ -893,11 +677,6 @@ class _ImportPageState extends State<ImportPage> {
                     onPressed: _saving ? null : save,
                     child: Text(_saving ? tr("正在保存与连接…") : tr("保存设置")),
                   ),
-                  if (!widget.newWatch && widget.controller.address != null)
-                    TextButton(
-                      onPressed: _saving ? null : forget,
-                      child: Text(tr("移除观察钱包")),
-                    ),
                 ],
               ),
             ),

@@ -16,7 +16,10 @@ Stream<void> walletChanges(Uri uri, String token, String address) {
         ..connectionTimeout = const Duration(seconds: 15);
       client = transport;
       final ws = await WebSocket.connect(uri.toString(),
-              headers: {'Authorization': 'Bearer $token'},
+              headers: {
+                'Authorization': 'Bearer $token',
+                'X-Version': 'android/v1'
+              },
               customClient: transport)
           .timeout(const Duration(seconds: 15));
       if (stopped) {

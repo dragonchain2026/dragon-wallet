@@ -47,9 +47,9 @@ Map<String, dynamic> responseData({int? nextOffset}) => {
       'transactions': [
         {
           'txid': 'transaction',
+          'time': 1700000000,
           'height': 1,
           'confirmations': 101,
-          'time': 1700000000,
           'delta_atomic': '100000001',
           'coinbase': 0,
         },
@@ -57,6 +57,7 @@ Map<String, dynamic> responseData({int? nextOffset}) => {
       'utxos': [
         {
           'txid': 'transaction',
+          'time': 1700000000,
           'height': 1,
           'confirmations': 101,
           'vout': 0,
@@ -78,8 +79,43 @@ WalletController controller({
         streamFactory:
             streamFactory ?? (_, token, address) => const Stream.empty(),
         client: MockClient(
-          handler ??
-              (request) async => http.Response(jsonEncode(responseData()), 200),
+          (request) async {
+            final response = await (handler ??
+                (request) async =>
+                    http.Response(jsonEncode(responseData()), 200))(request);
+            if (!request.url.path.startsWith('/w/v1/') ||
+                response.statusCode != 200 ||
+                request.method != 'GET') {
+              return response;
+            }
+            Map<String, dynamic> data;
+            try {
+              data = jsonDecode(response.body) as Map<String, dynamic>;
+            } catch (_) {
+              return response;
+            }
+            if (!data.containsKey('tip') ||
+                !data.containsKey('balance_atomic')) {
+              return response;
+            }
+            return http.Response(
+                jsonEncode({
+                  ...data,
+                  'height': (data['tip'] as Map)['height'],
+                  'index': data['tip'],
+                  'data_time': 1700000000,
+                  'items': request.url.path.endsWith('/utxo')
+                      ? data['utxos']
+                      : (data['transactions'] as List)
+                          .where((tx) =>
+                              (tx['coinbase'] == 1) ==
+                              (request.url.queryParameters['type'] == 'mining'))
+                          .toList(),
+                  'next_cursor':
+                      data['next_offset'] == null ? null : 'fixture-cursor',
+                }),
+                200);
+          },
         ),
       ),
     );
@@ -135,17 +171,17 @@ void main() {
     }
   });
 
-  testWidgets('startup, wallet events and button refresh; background pauses',
+  testWidgets('startup, minute polling and button refresh; background pauses',
       (tester) async {
     var requests = 0;
-    final changes = StreamController<void>.broadcast();
-    addTearDown(changes.close);
-    final wallet = controller(
-        streamFactory: (_, token, address) => changes.stream,
-        handler: (_) async {
-          requests++;
-          return http.Response(jsonEncode(responseData()), 200);
-        });
+    var connections = 0;
+    final wallet = controller(streamFactory: (_, token, address) {
+      connections++;
+      return const Stream.empty();
+    }, handler: (request) async {
+      if (request.url.path.endsWith('/balance')) requests++;
+      return http.Response(jsonEncode(responseData()), 200);
+    });
     await wallet.configure(address, 'https://wallet.example.com', token);
     expect(requests, 0);
     await tester.pumpWidget(DragonWalletApp(controller: wallet));
@@ -159,31 +195,27 @@ void main() {
     await tester
         .runAsync(() => Future<void>.delayed(const Duration(milliseconds: 20)));
     await tester.pumpAndSettle();
-    expect(requests, 1);
-    changes.add(null);
-    await tester.pump();
-    await tester
-        .runAsync(() => Future<void>.delayed(const Duration(milliseconds: 20)));
-    await tester.pumpAndSettle();
     expect(requests, 2);
+    expect(connections, 0);
     tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
     await tester.pump(const Duration(minutes: 2));
     expect(requests, 2);
     tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    await tester
+        .runAsync(() => Future<void>.delayed(const Duration(milliseconds: 20)));
     await tester.pumpAndSettle();
-    await wallet.setHistoryTypes({'mining'});
     await tester.pumpAndSettle();
-    expect(requests, 2);
+    expect(requests, 3);
     expect(find.byType(RefreshIndicator), findsNothing);
     expect(find.byTooltip('刷新'), findsOneWidget);
     await tester.tap(find.byTooltip('刷新'));
     await tester
         .runAsync(() => Future<void>.delayed(const Duration(milliseconds: 20)));
     await tester.pumpAndSettle();
-    expect(requests, 3);
+    expect(requests, 4);
     expect(wallet.snapshot, isNotNull);
     await tester.pump(const Duration(seconds: 30));
-    expect(requests, 3);
+    expect(requests, 4);
     await tester.pumpWidget(const SizedBox());
     wallet.dispose();
   });
@@ -196,7 +228,7 @@ void main() {
       return http.Response(
           jsonEncode({
             ...responseData(),
-            'address': request.url.pathSegments[2],
+            'address': request.url.queryParameters['address'],
           }),
           200);
     });
@@ -204,8 +236,12 @@ void main() {
     await wallet.configure(address, 'https://wallet.example.com', token);
     const other = 'dragon1qjctnj8237jyucklkscaghh92rfp6lcf9fuvx0c';
     await wallet.configure(other, 'https://wallet.example.com', token);
-    expect(requests.length, 1);
-    expect(requests.single.pathSegments[2], other);
+    expect(requests.length, 5);
+    expect(
+        requests.every((r) =>
+            r.path.endsWith('/height') ||
+            r.queryParameters['address'] == other),
+        isTrue);
     expect(wallet.snapshot!.data['address'], other);
   });
 
@@ -303,7 +339,10 @@ void main() {
         requests.add(request);
         return http.Response(
           jsonEncode(
-            responseData(nextOffset: requests.length == 1 ? 50 : null),
+            responseData(
+                nextOffset: request.url.queryParameters.containsKey('cursor')
+                    ? null
+                    : 50),
           ),
           200,
         );
@@ -313,10 +352,80 @@ void main() {
     await wallet.configure(address, 'https://wallet.example.com', token);
     await wallet.refresh();
     await wallet.refresh(more: true);
-    expect(requests.last.url.queryParameters['tip'], 'tip');
-    expect(requests.last.url.queryParameters['offset'], '50');
+    expect(requests.last.url.queryParameters['cursor'], 'fixture-cursor');
+    expect(requests.last.headers['X-Version'], 'android/v1');
     expect(requests.last.headers['Authorization'], 'Bearer $token');
     expect(wallet.snapshot!.transactions.length, 2);
+  });
+
+  test(
+      'expired history pagination automatically reloads without technical errors',
+      () async {
+    var calls = 0;
+    final wallet = controller(handler: (request) async {
+      if (request.url.queryParameters['type'] == 'normal') calls++;
+      if (request.url.queryParameters.containsKey('cursor')) {
+        return http.Response('{}', 409);
+      }
+      final data = responseData(nextOffset: calls == 1 ? 50 : null);
+      data.remove('synced');
+      data.remove('node_height');
+      data['tip'] = {'hash': 'tip'};
+      return http.Response(jsonEncode(data), 200);
+    });
+    addTearDown(wallet.dispose);
+    await wallet.configure(address, 'https://wallet.example.com', token);
+    await wallet.refresh();
+    await wallet.refresh(more: true);
+    await Future<void>.delayed(Duration.zero);
+    expect(calls, 3);
+    expect(wallet.error, isNull);
+    expect(wallet.snapshot!.transactions.length, 1);
+  });
+
+  testWidgets(
+      'refresh frequency applies immediately, manual pauses, and setting survives restart',
+      (tester) async {
+    final store = MemoryStore();
+    var requests = 0;
+    final wallet = controller(
+        store: store,
+        handler: (request) async {
+          if (request.url.path.endsWith('/balance')) requests++;
+          return http.Response(jsonEncode(responseData()), 200);
+        });
+    await wallet.configure(address, 'https://wallet.example.com', token);
+    await tester.pumpWidget(DragonWalletApp(controller: wallet));
+    await tester
+        .runAsync(() => Future<void>.delayed(const Duration(milliseconds: 20)));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('连接与钱包设置'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byType(DropdownButtonFormField<int>));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('10 秒').last);
+    await tester.pumpAndSettle();
+    expect(wallet.refreshSeconds, 10);
+    Navigator.of(tester.element(find.byType(ImportPage))).pop();
+    await tester.pumpAndSettle();
+    final before = requests;
+    await tester.pump(const Duration(seconds: 10));
+    await tester
+        .runAsync(() => Future<void>.delayed(const Duration(milliseconds: 20)));
+    await tester.pumpAndSettle();
+    expect(requests, before + 1);
+    await wallet.setRefreshSeconds(0);
+    await tester.pump(const Duration(minutes: 31));
+    expect(requests, before + 1);
+    await tester.runAsync(() => wallet.refresh());
+    expect(requests, before + 2);
+    await wallet.forget();
+    await tester.pumpWidget(const SizedBox());
+    wallet.dispose();
+    final restored = controller(store: store);
+    await tester.runAsync(() => restored.initialize());
+    expect(restored.refreshSeconds, 0);
+    restored.dispose();
   });
 
   test('wrong address or network response is rejected', () async {
@@ -349,11 +458,15 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.text('导入观察钱包'));
     await tester.pumpAndSettle();
+    await tester.tap(find.text('添加观察钱包'));
+    await tester.pumpAndSettle();
     expect(find.text('访问令牌'), findsNothing);
-    expect(find.byType(TextFormField), findsNWidgets(3));
-    await tester.enterText(find.byType(TextFormField).at(0), address);
-    await tester.ensureVisible(find.text('保存设置'));
-    await tester.tap(find.text('保存设置'));
+    expect(find.byType(TextFormField), findsNWidgets(2));
+    await tester.enterText(find.byType(TextFormField).last, address);
+    await tester.ensureVisible(find.text('保存'));
+    await tester.tap(find.text('保存'));
+    await tester.pumpAndSettle();
+    Navigator.of(tester.element(find.text('观察钱包列表'))).pop();
     await tester.pumpAndSettle();
     expect(find.text('已确认余额'), findsOneWidget);
     expect(find.text('转账'), findsOneWidget);
@@ -367,12 +480,15 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.byType(QrImageView), findsOneWidget);
     expect(find.text(address), findsOneWidget);
-    await tester.tap(find.byTooltip('连接与钱包设置'));
+    await tester.tap(find.byType(NavigationDestination).first);
     await tester.pumpAndSettle();
-    await tester.ensureVisible(find.text('移除观察钱包'));
-    await tester.tap(find.text('移除观察钱包'));
+    await tester.tap(find.text('观察钱包列表'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('移除'));
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.tap(find.widgetWithText(FilledButton, '移除'));
+    await tester.pumpAndSettle();
+    Navigator.of(tester.element(find.text('观察钱包列表'))).pop();
     await tester.pumpAndSettle();
     expect(find.text('导入观察钱包'), findsOneWidget);
     await tester.pumpWidget(const SizedBox());
@@ -399,7 +515,7 @@ void main() {
       await tester.tap(find.text('+1.00000001'));
       await tester.pumpAndSettle();
       expect(find.text('交易详情'), findsOneWidget);
-      expect(find.text('确认数：101'), findsOneWidget);
+      expect(find.text('确认数：100'), findsOneWidget);
       await tester.pumpWidget(const SizedBox());
       wallet.dispose();
     },

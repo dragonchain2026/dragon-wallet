@@ -40,6 +40,10 @@ class WalletApiException implements Exception {
   String toString() => message;
 }
 
+class WalletPageExpired implements Exception {
+  const WalletPageExpired();
+}
+
 class WalletSnapshot {
   WalletSnapshot(Map<String, dynamic> json, String expectedAddress)
       : data = json {
@@ -47,7 +51,6 @@ class WalletSnapshot {
         json['address'] != expectedAddress ||
         json['balance_scope'] != 'confirmed_chain_only' ||
         json['mempool_included'] != false ||
-        json['synced'] is! bool ||
         json['tip'] is! Map ||
         json['transactions'] is! List ||
         json['utxos'] is! List) {
@@ -57,10 +60,7 @@ class WalletSnapshot {
     if (balance.isNegative) {
       throw FormatException(tr("无效余额"));
     }
-    if (height < -1 ||
-        (nodeHeight ?? 0) < 0 ||
-        (nextOffset ?? 0) < 0 ||
-        (height >= 0 && (tipHash == null || tipHash!.isEmpty)) ||
+    if ((nextOffset ?? 0) < 0 ||
         json['utxo_count'] is! int ||
         (json['utxo_count'] as int) < 0 ||
         json['utxos_truncated'] is! bool) {
@@ -69,7 +69,6 @@ class WalletSnapshot {
     for (final tx in transactions) {
       BigInt.parse(tx['delta_atomic'] as String);
       if ((tx['confirmations'] as int) < 1 ||
-          (tx['height'] as int) < 0 ||
           (tx['txid'] as String).isEmpty ||
           (tx['time'] as int) < 0 ||
           (tx['time'] as int) > 253402300799) {
@@ -79,7 +78,6 @@ class WalletSnapshot {
     for (final utxo in utxos) {
       if (BigInt.parse(utxo['value_atomic'] as String).isNegative ||
           (utxo['confirmations'] as int) < 1 ||
-          (utxo['height'] as int) < 0 ||
           (utxo['txid'] as String).isEmpty ||
           (utxo['vout'] as int) < 0) {
         throw FormatException(tr("无效的未花费输出"));
@@ -88,10 +86,7 @@ class WalletSnapshot {
   }
   final Map<String, dynamic> data;
   late final BigInt balance;
-  bool get synced => data['synced'] as bool;
-  int get height => (data['tip'] as Map)['height'] as int;
   String? get tipHash => (data['tip'] as Map)['hash'] as String?;
-  int? get nodeHeight => data['node_height'] as int?;
   int? get nextOffset => data['next_offset'] as int?;
   List<Map<String, dynamic>> get transactions =>
       (data['transactions'] as List).cast<Map<String, dynamic>>();
@@ -111,10 +106,11 @@ class WalletApi {
       String action, Map<String, dynamic> body) async {
     try {
       final request = http.Request('POST',
-          validateEndpoint(endpoint).replace(path: '/w1/transfers/$action'))
+          validateEndpoint(endpoint).replace(path: '/w/v1/transfers/$action'))
         ..followRedirects = false;
       request.headers.addAll({
         'Authorization': 'Bearer $token',
+        'X-Version': 'android/v1',
         'Content-Type': 'application/json'
       });
       request.body = jsonEncode(body);
@@ -132,7 +128,7 @@ class WalletApi {
         throw WalletApiException(switch (response.statusCode) {
           401 => tr("访问令牌无效，请修改连接设置"),
           409 => action == 'prepare'
-              ? tr("本地索引尚未同步完成，暂不能转账")
+              ? tr("转账暂不可用，请稍后重试")
               : tr("输入已不可用，请核对交易是否已发送；不要重复创建转账"),
           422 => tr("节点未接受交易，请核对手续费与输入状态"),
           400 => tr("转账参数无效"),
@@ -149,36 +145,145 @@ class WalletApi {
     }
   }
 
+  Future<Map<String, dynamic>> panel(
+      String endpoint, String token, String address, String kind,
+      {String? cursor}) async {
+    if (!{'height', 'balance', 'utxo', 'normal', 'mining'}.contains(kind)) {
+      throw ArgumentError('Invalid wallet page');
+    }
+    final normalized = normalizeAddress(address);
+    final uri = validateEndpoint(endpoint).replace(
+      path:
+          '/w/v1/${kind == 'height' ? 'index/height' : kind == 'normal' || kind == 'mining' ? 'transfers' : kind}',
+      queryParameters: {
+        if (kind != 'height') 'address': normalized,
+        if (kind == 'normal' || kind == 'mining') 'type': kind,
+        if (cursor != null) 'cursor': cursor
+      },
+    );
+    try {
+      final request = http.Request('GET', uri)..followRedirects = false;
+      request.headers.addAll(
+          {'Authorization': 'Bearer $token', 'X-Version': 'android/v1'});
+      final response =
+          await _client.send(request).timeout(const Duration(seconds: 20));
+      if (response.statusCode != 200) {
+        await response.stream.listen((_) {}).cancel();
+        if (response.statusCode == 409) throw const WalletPageExpired();
+        throw WalletApiException(switch (response.statusCode) {
+          401 => tr('访问令牌无效，请修改连接设置'),
+          429 => tr('请求过于频繁，请稍后重试'),
+          _ => tr('服务暂不可用（{0}）', [response.statusCode]),
+        });
+      }
+      final bytes = <int>[];
+      await for (final chunk
+          in response.stream.timeout(const Duration(seconds: 20))) {
+        bytes.addAll(chunk);
+        if (bytes.length > 2 * 1024 * 1024) {
+          throw WalletApiException(tr('服务响应过大'));
+        }
+      }
+      final data = jsonDecode(utf8.decode(bytes)) as Map<String, dynamic>;
+      if (kind == 'height') {
+        if (data['network'] != 'mainnet' ||
+            data['height'] is! int ||
+            data['height'] < 0 ||
+            data['data_time'] is! int) {
+          throw const FormatException('Invalid height');
+        }
+        return data;
+      }
+      if (data['network'] != 'mainnet' ||
+          data['address'] != normalized ||
+          data['index'] is! Map ||
+          data['data_time'] is! int) {
+        throw const FormatException('Invalid wallet page');
+      }
+      if (kind == 'balance') {
+        if (BigInt.parse(data['balance_atomic'] as String).isNegative ||
+            data['utxo_count'] is! int ||
+            data['utxo_count'] < 0) {
+          throw const FormatException('Invalid balance');
+        }
+      } else {
+        final items = (data['items'] as List).cast<Map<String, dynamic>>();
+        if (kind != 'normal' && items.length > 10) {
+          throw const FormatException('Invalid page length');
+        }
+        for (final item in items) {
+          if (item['txid'] is! String ||
+              (item['txid'] as String).isEmpty ||
+              item['height'] is! int ||
+              item['height'] < 0 ||
+              item['confirmations'] is! int ||
+              item['confirmations'] < 1) {
+            throw const FormatException('Invalid record');
+          }
+          final value = BigInt.parse(
+              item[kind == 'utxo' ? 'value_atomic' : 'delta_atomic'] as String);
+          if (kind == 'utxo' &&
+              (value.isNegative || item['vout'] is! int || item['vout'] < 0)) {
+            throw const FormatException('Invalid output');
+          }
+          if (kind != 'utxo' &&
+              (item['time'] is! int ||
+                  item['time'] < 0 ||
+                  item['time'] > 253402300799)) {
+            throw const FormatException('Invalid time');
+          }
+        }
+        if (kind == 'normal' &&
+            data['next_cursor'] != null &&
+            data['next_cursor'] is! String) {
+          throw const FormatException('Invalid cursor');
+        }
+      }
+      return data;
+    } on TimeoutException {
+      throw WalletApiException(tr('连接超时，请检查网络后重试'));
+    } on http.ClientException {
+      throw WalletApiException(tr('无法连接服务，请检查网络和服务地址'));
+    } on FormatException {
+      throw WalletApiException(tr('服务返回的数据格式不正确'));
+    } on TypeError {
+      throw WalletApiException(tr('服务返回的数据不完整'));
+    }
+  }
+
   Future<WalletSnapshot> snapshot(
     String endpoint,
     String token,
     String address, {
+    String historyType = 'normal',
     int offset = 0,
     int utxoOffset = 0,
     String? tip,
-    Set<String> types = const {'normal'},
   }) async {
     final normalized = normalizeAddress(address);
     final uri = validateEndpoint(endpoint).replace(
-      pathSegments: ['w1', 'addresses', normalized, 'snapshot'],
+      pathSegments: ['w', 'v1', 'addresses', normalized, 'snapshot'],
       queryParameters: {
-        'limit': '50',
+        'ready': 'true',
+        'history_type': historyType,
+        'utxo_limit': '10',
+        'limit': historyType == 'mining' ? '10' : '50',
         'offset': '$offset',
         if (utxoOffset > 0) 'utxo_offset': '$utxoOffset',
-        'types': types.isEmpty ? 'none' : (types.toList()..sort()).join(','),
         if (tip != null) 'tip': tip,
       },
     );
     try {
       final request = http.Request('GET', uri)..followRedirects = false;
       request.headers['Authorization'] = 'Bearer $token';
+      request.headers['X-Version'] = 'android/v1';
       final response =
           await _client.send(request).timeout(const Duration(seconds: 20));
       if (response.statusCode != 200) {
         await response.stream.listen((_) {}).cancel();
+        if (response.statusCode == 409) throw const WalletPageExpired();
         throw WalletApiException(switch (response.statusCode) {
           401 => tr("访问令牌无效，请修改连接设置"),
-          409 => tr("区块链已更新，请刷新后再加载历史"),
           429 => tr("请求过于频繁，请稍后重试"),
           _ => tr("服务暂不可用（{0}）", [response.statusCode]),
         });
@@ -211,7 +316,7 @@ class WalletApi {
     final base = validateEndpoint(endpoint);
     return _streamFactory(
         base.replace(
-            scheme: base.scheme == 'https' ? 'wss' : 'ws', path: '/w1/ws'),
+            scheme: base.scheme == 'https' ? 'wss' : 'ws', path: '/w/v1/ws'),
         token,
         address);
   }

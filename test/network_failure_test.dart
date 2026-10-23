@@ -60,7 +60,7 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 400));
     expect(find.byType(AlertDialog), findsNothing);
-    expect(requests, 1);
+    expect(requests, 5);
     pending.complete(http.Response('{}', 503));
     await tester
         .runAsync(() => Future<void>.delayed(const Duration(milliseconds: 30)));
@@ -182,6 +182,7 @@ void main() {
     wallet.address = fixtures.address;
     wallet.endpoint = 'https://offline.example.com';
     wallet.token = fixtures.token;
+    await wallet.renameAddress(fixtures.address, 'Existing wallet');
     await tester.pumpWidget(MaterialApp(
         home: Builder(
             builder: (context) => TextButton(
@@ -191,16 +192,21 @@ void main() {
                 child: const Text('open')))));
     await tester.tap(find.text('open'));
     await tester.pumpAndSettle();
-    const other = 'dragon1qjctnj8237jyucklkscaghh92rfp6lcf9fuvx0c';
-    await tester.enterText(find.byType(TextFormField).first, other);
+    expect(find.byType(TextFormField), findsOneWidget);
+    expect(find.text('当前钱包'), findsNothing);
+    expect(find.text('钱包名称'), findsNothing);
+    final originalName = wallet.nameFor(fixtures.address);
+    await tester.enterText(
+        find.byType(TextFormField), 'https://offline.example.com');
     await tester.ensureVisible(find.text('保存设置'));
     await tester.tap(find.text('保存设置'));
     await tester.pumpAndSettle();
     expect(find.byType(ImportPage), findsNothing);
-    expect(wallet.address, other);
+    expect(wallet.address, fixtures.address);
+    expect(wallet.nameFor(fixtures.address), originalName);
     await tester
         .runAsync(() => Future<void>.delayed(const Duration(milliseconds: 30)));
-    expect(requests, WalletController.bundledToken.isEmpty ? 0 : 1);
+    expect(requests, WalletController.bundledToken.isEmpty ? 0 : 5);
     expect(pending.isCompleted, false);
     pending.complete(http.Response('{}', 503));
     await tester
